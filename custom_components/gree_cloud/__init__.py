@@ -9,6 +9,7 @@ from greeclimate.mqtt_client import GreeMqttClient
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
 from .const import CONF_SERVER, DOMAIN, GREE_MQTT_SERVERS
 from .coordinator import (
@@ -135,6 +136,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GreeCloudConfigEntry) ->
 
         _LOGGER.info("Successfully discovered %d cloud devices", len(coordinators))
 
+        # Flag devices that are still in HA but gone from the Gree account, so
+        # the user knows they can be deleted (see async_remove_config_entry_device).
+        _warn_stale_devices(hass, entry, coordinators)
+
         # Setup platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -173,3 +178,45 @@ async def async_unload_entry(hass: HomeAssistant, entry: GreeCloudConfigEntry) -
             _LOGGER.warning("Error closing API session: %s", err)
 
     return unload_ok
+
+
+def _warn_stale_devices(hass: HomeAssistant, entry, coordinators) -> None:
+    """Log a warning for each HA device no longer present on the Gree account."""
+    known_macs = {c.device.device_info.mac for c in coordinators}
+    registry = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        macs = {ident for domain, ident in device.identifiers if domain == DOMAIN}
+        if macs and not (macs & known_macs):
+            _LOGGER.warning(
+                "Gree device '%s' (%s) is no longer on your account; "
+                "you can remove it from its device page in Home Assistant",
+                device.name_by_user or device.name,
+                ", ".join(sorted(macs)),
+            )
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: GreeCloudConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow deleting a device from the UI once it is gone from the account.
+
+    Discovery is best-effort (a cloud hiccup can return a short list), so we
+    never remove devices automatically -- we just let the user delete a device
+    whose MAC is not among the currently discovered units. A device removed by
+    mistake reappears on the next reload.
+    """
+    runtime = getattr(config_entry, "runtime_data", None)
+    if runtime is None:
+        return True
+
+    known_macs = {
+        coordinator.device.device_info.mac
+        for coordinator in runtime.coordinators
+    }
+    still_present = any(
+        domain == DOMAIN and identifier in known_macs
+        for domain, identifier in device_entry.identifiers
+    )
+    return not still_present
