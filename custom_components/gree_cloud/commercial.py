@@ -180,6 +180,19 @@ class CommercialCloudDevice(CloudDevice):
 
         super().handle_state_update(**clean)
 
+    def set_property(self, name, value) -> None:
+        """Keep ``SetDeciTem`` consistent with ``SetTem`` on every write.
+
+        greeclimate only updates ``SetTem`` when changing the setpoint (it
+        touches the tenths value ``SetDeciTem`` only for units that report
+        ``HalfTemEn``, which these do not). The command then carries a stale
+        ``SetDeciTem``, and ``Device.target_temperature`` reads ``SetDeciTem/10``
+        in Celsius -- so the displayed target never moves. Mirror the two.
+        """
+        super().set_property(name, value)
+        if name is Props.TEMP_SET:
+            super().set_property(Props.TEMP_DECI, int(value) * 10)
+
     # -- send -----------------------------------------------------------------
     async def _publish(self, command: dict) -> None:
         """Publish a pack stamped with the controller (``mac``) and unit (``sub``)."""
