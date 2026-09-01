@@ -29,9 +29,38 @@ from greeclimate.cloud_device import CloudDevice
 from greeclimate.device import Props
 from greeclimate.mqtt_client import MqttDeviceMessage
 
-from .const import COMMERCIAL_PROP_IN_TEMP
+from .const import COMMERCIAL_PROP_IN_TEMP, COMMERCIAL_PROP_TOTAL_ENERGY
 
 _LOGGER = logging.getLogger(__name__)
+
+# Device columns whose values must be numeric. The commercial controller
+# sometimes delivers these as strings (e.g. "67") or as blank placeholders, and
+# the base greeclimate Device does raw arithmetic on them (TypeError) -- so
+# coerce to int and drop anything non-numeric rather than store it.
+_NUMERIC_PROPS: frozenset[str] = frozenset(
+    {p.value for p in Props}
+    | {COMMERCIAL_PROP_IN_TEMP, COMMERCIAL_PROP_TOTAL_ENERGY}
+)
+
+
+def _to_int(value: object) -> int | None:
+    """Return *value* as an int, or None if it is not a plain number."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return int(float(text))
+            except ValueError:
+                return None
+    return None
 
 # Columns we poll for. The commercial indoor units report a large custom column
 # set; these are the ones that map to climate features. The controller also
@@ -121,17 +150,35 @@ class CommercialCloudDevice(CloudDevice):
         super()._handle_mqtt_message(topic, message)
 
     def handle_state_update(self, **kwargs) -> None:
-        """Map commercial column names onto the standard ``Props``."""
-        if COMMERCIAL_PROP_IN_TEMP in kwargs:
-            kwargs.setdefault(
-                Props.TEMP_SENSOR.value, kwargs.pop(COMMERCIAL_PROP_IN_TEMP)
+        """Normalise commercial column values and map them onto standard ``Props``."""
+        clean: dict[str, object] = {}
+        for key, value in kwargs.items():
+            if key in _NUMERIC_PROPS:
+                number = _to_int(value)
+                if number is None:
+                    if str(value).strip():
+                        _LOGGER.debug(
+                            "%s: ignoring non-numeric %s=%r",
+                            self._child_mac,
+                            key,
+                            value,
+                        )
+                    continue  # keep whatever value we already had
+                value = number
+            clean[key] = value
+
+        # Commercial units report indoor temperature under `InTem`, not `TemSen`.
+        if COMMERCIAL_PROP_IN_TEMP in clean:
+            clean.setdefault(
+                Props.TEMP_SENSOR.value, clean.pop(COMMERCIAL_PROP_IN_TEMP)
             )
-        # Commercial units omit these; default them so target_temperature and the
-        # unit accessor return a value instead of None.
-        if Props.TEMP_SET.value in kwargs:
-            kwargs.setdefault(Props.TEMP_BIT.value, 0)
-            kwargs.setdefault(Props.TEMP_UNIT.value, 0)
-        super().handle_state_update(**kwargs)
+        # They also omit these; default them so target_temperature and the unit
+        # accessor return a value instead of None.
+        if Props.TEMP_SET.value in clean:
+            clean.setdefault(Props.TEMP_BIT.value, 0)
+            clean.setdefault(Props.TEMP_UNIT.value, 0)
+
+        super().handle_state_update(**clean)
 
     # -- send -----------------------------------------------------------------
     async def _publish(self, command: dict) -> None:
