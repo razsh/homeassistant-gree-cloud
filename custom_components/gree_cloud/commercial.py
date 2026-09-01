@@ -122,11 +122,6 @@ async def async_get_parent_macs(api: GreeCloudApi) -> dict[str, str]:
 class CommercialCloudDevice(CloudDevice):
     """One indoor unit behind a shared commercial WiFi controller."""
 
-    #: Append ``Buzzer_ON_OFF=1`` to every command so the unit sounds its
-    #: confirmation beep, matching the Gree+ app. Set to ``False`` for silent
-    #: operation. (Verified on WB05BR firmware: value 1 beeps, 0 is silent.)
-    beep_on_command: bool = True
-
     def __init__(self, *args, parent_mac: str, **kwargs) -> None:
         """Initialise, overriding the MQTT parent with the real controller MAC."""
         super().__init__(*args, **kwargs)
@@ -246,10 +241,6 @@ class CommercialCloudDevice(CloudDevice):
 
     async def _send_command(self, opt: list, p: list) -> None:
         """Send one command pack (with ``mac``/``sub``) and wait for the ack."""
-        opt, p = list(opt), list(p)
-        if self.beep_on_command and "Buzzer_ON_OFF" not in opt:
-            opt.append("Buzzer_ON_OFF")
-            p.append(1)
         self._response_event = asyncio.Event()
         await self._publish({"t": "cmd", "opt": opt, "p": p})
         try:
